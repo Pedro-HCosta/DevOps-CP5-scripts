@@ -1,45 +1,23 @@
 #!/usr/bin/env bash
-# Script independente. Defina/exporte as variáveis no Cloud Shell conforme o README.
 set +x
 set -Eeuo pipefail
 trap 'printf "Falha na linha %s. A execução foi interrompida.\n" "$LINENO" >&2' ERR
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
-die() { printf '%s\n' "$*" >&2; exit 1; }
-need() { command -v "$1" >/dev/null 2>&1 || die "Instale o comando: $1"; }
-validate_variables() {
- : "${SUBSCRIPTION_ID:?Defina as variáveis do README no Cloud Shell.}"
- : "${RESOURCE_GROUP:?}" "${LOCATION:?}" "${WEBAPP_NAME:?}" "${SQL_SERVER_NAME:?}"
- : "${DATABASE_NAME:?}" "${PLAN_NAME:?}" "${WORKSPACE_NAME:?}" "${INSIGHTS_NAME:?}"
- [[ "$SUBSCRIPTION_ID" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]] || die 'SUBSCRIPTION_ID inválido.'
- [[ "${SUFFIX:-}" =~ ^[a-z0-9]{6,20}$ ]] || die 'SUFFIX deve ter 6 a 20 letras minúsculas/dígitos.'
- [[ "$RESOURCE_GROUP" == "rg-dimdim-cp5-${SUFFIX}" ]] || die 'Use o grupo dedicado rg-dimdim-cp5-SUFFIX.'
-}
-
-azc() { az "$@" --subscription "$SUBSCRIPTION_ID" --only-show-errors; }
-azure_ready() {
- need az
- az account show --output none --only-show-errors || die 'Entre primeiro: az login (ou az login --use-device-code).'
- az account set --subscription "$SUBSCRIPTION_ID" --only-show-errors
-}
-require_group() {
- [[ "$(azc group exists --name "$RESOURCE_GROUP" --output tsv)" == true ]] || die 'Grupo inexistente. Execute 01-criar-recursos.sh.'
- [[ "$(azc group show --name "$RESOURCE_GROUP" --query tags.projeto --output tsv)" == DimDimCP5 ]] || die 'Grupo sem a tag projeto=DimDimCP5. Operação recusada.'
-}
-credentials() {
- if [[ -z "${SQL_ADMIN_USER:-}" ]]; then
-  read -r -s -p 'Usuário administrador SQL (oculto): ' SQL_ADMIN_USER; printf '\n'
- fi
- if [[ -z "${SQL_ADMIN_PASSWORD:-}" ]]; then
-  read -r -s -p 'Senha SQL (oculta): ' SQL_ADMIN_PASSWORD; printf '\n'
- fi
- [[ -n "$SQL_ADMIN_USER" && -n "$SQL_ADMIN_PASSWORD" ]] || die 'Credenciais vazias.'
- export SQL_ADMIN_USER SQL_ADMIN_PASSWORD
-}
+source "$(dirname -- "${BASH_SOURCE[0]}")/00-variaveis.sh"
 need curl; need python3
 interactive=false
-if [[ "${1:-}" == --interativo ]]; then interactive=true; shift; fi
-if [[ $# -gt 1 ]]; then die 'Use: 05-testar-api.sh [--interativo] [URL_BASE]'; fi
+sql_evidence=false
+sql_console=false
+while [[ "${1:-}" == --* ]]; do
+ case "$1" in
+  --interativo) interactive=true ;;
+  --sql) sql_evidence=true ;;
+  --console) sql_console=true ;;
+  *) die 'Use: 03-testar-api.sh [--sql|--console] [--interativo] [URL_BASE]' ;;
+ esac
+ shift
+done
+[[ $# -le 1 ]] || die 'Informe no máximo uma URL.'
+if [[ "$sql_evidence" == true || "$sql_console" == true ]]; then credentials; fi
 if [[ $# -eq 1 ]]; then base="${1%/}"; else
  validate_variables; azure_ready; require_group
  host="$(azc webapp show --resource-group "$RESOURCE_GROUP" --name "$WEBAPP_NAME" --query defaultHostName --output tsv)"
@@ -48,7 +26,7 @@ fi
 [[ "$base" == https://* || "$base" == http://localhost:* || "$base" == http://127.0.0.1:* ]] || die 'Use uma URL HTTPS ou localhost.'
 umask 077
 body_file="$(mktemp)"
-trap 'rm -f -- "$body_file"' EXIT
+trap 'rm -f -- "$body_file"; unset SQL_ADMIN_PASSWORD SQL_ADMIN_USER' EXIT
 call() {
  local method="$1" path="$2" expected="$3" body="${4:-}" code
  local args=(--silent --show-error --connect-timeout 15 --max-time 60 --request "$method" --output "$body_file" --write-out '%{http_code}')
@@ -59,8 +37,16 @@ call() {
  if [[ -s "$body_file" ]]; then python3 -m json.tool "$body_file"; fi
 }
 evidence() {
+ if [[ "$sql_console" == true ]]; then
+  executar_sql --console
+ fi
+ if [[ "$sql_evidence" == true ]]; then
+  executar_sql verificar-persistencia.sql
+ fi
  if [[ "$interactive" == true ]]; then
-  printf 'Em OUTRO terminal, execute 03-executar-sql.sh verificar-persistencia.sql e mostre o resultado.\n'
+  if [[ "$sql_evidence" != true && "$sql_console" != true ]]; then
+   printf 'Use --console para abrir o sqlcmd no próprio teste.\n'
+  fi
   read -r -p 'Depois da evidência, pressione Enter para continuar: ' _
  fi
 }
