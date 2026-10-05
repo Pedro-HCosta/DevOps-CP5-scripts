@@ -1,0 +1,24 @@
+// Execute cada consulta separadamente em Application Insights > Logs.
+requests
+| where timestamp > ago(1h)
+| project timestamp, name, resultCode, success, duration
+| order by timestamp desc
+
+// Dependências SQL (App Insights). Não exibe texto SQL com valores.
+dependencies
+| where timestamp > ago(1h)
+| where type contains "SQL"
+| project timestamp, name, target, type, success, duration
+| order by timestamp desc
+
+// Se consultar diretamente no Log Analytics Workspace, use os nomes abaixo:
+AppRequests
+| where TimeGenerated > ago(1h)
+| project TimeGenerated, Name, ResultCode, Success, DurationMs
+| order by TimeGenerated desc
+
+AppDependencies
+| where TimeGenerated > ago(1h)
+| where DependencyType contains "SQL"
+| project TimeGenerated, Name, Target, DependencyType, Success, DurationMs
+| order by TimeGenerated desc
